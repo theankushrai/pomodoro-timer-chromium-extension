@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Serene Focus</title>
+    <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="container">
+        <div class="timer-display">
+            <div id="timer" class="timer">25:00</div>
+            <div id="status" class="status">Ready to focus?</div>
+        </div>
+        
+        <div class="controls">
+            <button id="startPauseBtn" class="btn primary">Start</button>
+            <button id="resetBtn" class="btn secondary">Reset</button>
+        </div>
+        
+        <div class="progress-container">
+            <div class="progress-bar">
+                <div id="progress" class="progress"></div>
+            </div>
+            <div id="sessionCount" class="session-count">Sessions: 0/4</div>
+        </div>
+        
+        <div class="settings-toggle">
+            <button id="settingsBtn" class="btn-icon">
+                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="12" cy="12" r="3"></circle>
+                    <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+                </svg>
+            </button>
+        </div>
+    </div>
+
+    <div id="settingsModal" class="modal">
+        <div class="modal-content">
+            <h2>Settings</h2>
+            <div class="form-group">
+                <label for="workDuration">Work Duration (minutes)</label>
+                <input type="number" id="workDuration" min="1" max="60" value="25">
+            </div>
+            <div class="form-group">
+                <label for="shortBreakDuration">Short Break (minutes)</label>
+                <input type="number" id="shortBreakDuration" min="1" max="30" value="5">
+            </div>
+            <div class="form-group">
+                <label for="longBreakDuration">Long Break (minutes)</label>
+                <input type="number" id="longBreakDuration" min="1" max="60" value="15">
+            </div>
+            <div class="form-actions">
+                <button id="saveSettings" class="btn primary">Save</button>
+                <button id="closeSettings" class="btn secondary">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <audio id="timerEndSound" preload="auto">
+        <source src="sounds/timer-end.mp3" type="audio/mpeg">
+    </audio>
+    <audio id="breakEndSound" preload="auto">
+        <source src="sounds/break-end.mp3" type="audio/mpeg">
+    </audio>
+
+    <script src="popup.js" type="module"></script>
+</body>
+</html>
