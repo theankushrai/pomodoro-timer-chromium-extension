@@ -194,28 +194,32 @@ function startBreak() {
     const isLongBreak = sessionsCompleted % 4 === 0;
     const breakDuration = isLongBreak ? settings.longBreakDuration : settings.shortBreakDuration;
     
-    // Save state before redirecting
+    // Update state
     currentMode = 'break';
     timeLeft = breakDuration;
     isRunning = true;
-    saveTimerState();
+    timerEndTime = Date.now() + (breakDuration * 1000);
+    lastUpdateTime = Date.now();
     
-    // Redirect to break page
-    chrome.tabs.query({active: true, currentWindow: true}, (tabs) => {
-        const currentUrl = tabs[0]?.url;
+    // Save state with force flag to ensure new break starts fresh
+    chrome.storage.local.set({
+        timerState: {
+            mode: 'break',
+            timeLeft: breakDuration,
+            isRunning: true,
+            timestamp: Date.now(),
+            timerEndTime: timerEndTime,
+            sessionsCompleted: sessionsCompleted
+        },
+        // Clear any existing break state
+        lastActiveUrl: null
+    }, () => {
+        // Open break page in new tab
         const breakUrl = chrome.runtime.getURL('break.html');
+        chrome.tabs.create({ url: breakUrl });
         
-        // Only redirect if not already on the break page
-        if (!currentUrl || !currentUrl.includes('break.html')) {
-            // Store the current URL to return to after break
-            chrome.storage.local.set({ lastActiveUrl: currentUrl || 'chrome://newtab/' });
-            
-            // Redirect to break page
-            chrome.tabs.update(tabs[0]?.id, { url: breakUrl });
-        }
-        
-        // Start the break timer
-        startTimer();
+        // Close popup
+        window.close();
     });
 }
 
