@@ -36,8 +36,18 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
         
         // Don't redirect if already on the break page
         if (tab.url !== breakUrl && !tab.url.includes('break.html')) {
+            // Get the current timer state
+            const now = Date.now();
+            const remainingTime = Math.ceil((data.timerState.timerEndTime - now) / 1000);
+            
             // Store the current URL to return to after break
-            await chrome.storage.local.set({ lastActiveUrl: tab.url });
+            await chrome.storage.local.set({ 
+                lastActiveUrl: tab.url,
+                timerState: {
+                    ...data.timerState,
+                    timeLeft: remainingTime
+                }
+            });
             
             // Redirect to break page
             await chrome.tabs.update(tabId, { url: breakUrl });
@@ -130,53 +140,81 @@ chrome.runtime.onStartup.addListener(() => {
 
 // Set up context menu
 chrome.runtime.onInstalled.addListener(() => {
-    // Create a context menu item
-    chrome.contextMenus.create({
-        id: 'sereneFocusMenu',
-        title: 'Start Serene Focus',
-        contexts: ['action']
-    });
-    
-    // Add submenu items
-    chrome.contextMenus.create({
-        id: 'startFocus',
-        parentId: 'sereneFocusMenu',
-        title: 'Start Focus Session',
-        contexts: ['action']
-    });
-    
-    chrome.contextMenus.create({
-        id: 'takeBreak',
-        parentId: 'sereneFocusMenu',
-        title: 'Take a Break',
-        contexts: ['action']
-    });
-    
-    chrome.contextMenus.create({
-        id: 'resetTimer',
-        parentId: 'sereneFocusMenu',
-        title: 'Reset Timer',
-        contexts: ['action']
-    });
+    try {
+        // Create a context menu item
+        chrome.contextMenus.create({
+            id: 'sereneFocusMenu',
+            title: 'Start Serene Focus',
+            contexts: ['action']
+        }, () => {
+            if (chrome.runtime.lastError) {
+                console.warn('Context menu creation warning:', chrome.runtime.lastError);
+                return;
+            }
+            
+            // Add submenu items
+            chrome.contextMenus.create({
+                id: 'startFocus',
+                parentId: 'sereneFocusMenu',
+                title: 'Start Focus Session',
+                contexts: ['action']
+            });
+            
+            chrome.contextMenus.create({
+                id: 'takeBreak',
+                parentId: 'sereneFocusMenu',
+                title: 'Take a Break',
+                contexts: ['action']
+            });
+            
+            chrome.contextMenus.create({
+                id: 'resetTimer',
+                parentId: 'sereneFocusMenu',
+                title: 'Reset Timer',
+                contexts: ['action']
+            });
+        });
+    } catch (error) {
+        console.error('Error creating context menu:', error);
+    }
 });
 
 // Handle context menu clicks
-chrome.contextMenus.onClicked.addListener((info, tab) => {
-    switch (info.menuItemId) {
-        case 'startFocus':
-            // Send message to popup to start focus session
-            chrome.runtime.sendMessage({ type: 'START_FOCUS' });
-            break;
-        case 'takeBreak':
-            // Send message to popup to start break
-            chrome.runtime.sendMessage({ type: 'START_BREAK' });
-            break;
-        case 'resetTimer':
-            // Send message to popup to reset timer
-            chrome.runtime.sendMessage({ type: 'RESET_TIMER' });
-            break;
+function handleContextMenuClick(info, tab) {
+    try {
+        if (!info || !info.menuItemId) {
+            console.warn('No menu item ID in context menu click');
+            return;
+        }
+
+        const messageType = {
+            'startFocus': 'START_FOCUS',
+            'takeBreak': 'START_BREAK',
+            'resetTimer': 'RESET_TIMER'
+        }[info.menuItemId];
+
+        if (!messageType) {
+            console.warn('Unknown menu item clicked:', info.menuItemId);
+            return;
+        }
+
+        // Send message to popup
+        chrome.runtime.sendMessage({ type: messageType }, (response) => {
+            if (chrome.runtime.lastError) {
+                console.warn('Error sending message:', chrome.runtime.lastError);
+            }
+        });
+    } catch (error) {
+        console.error('Error in context menu click handler:', error);
     }
-});
+}
+
+// Add the click listener with error handling
+try {
+    chrome.contextMenus.onClicked.addListener(handleContextMenuClick);
+} catch (error) {
+    console.error('Failed to add context menu click listener:', error);
+}
 
 // Listen for tab activation to check if we need to redirect to break page
 chrome.tabs.onActivated.addListener(async (activeInfo) => {
@@ -189,11 +227,25 @@ chrome.tabs.onActivated.addListener(async (activeInfo) => {
         // Don't redirect if already on the break page or a new tab page
         if (tab.url !== breakUrl && !tab.url.includes('break.html') && 
             !tab.url.startsWith('chrome://') && !tab.url.startsWith('edge://')) {
-            // Store the current URL to return to after break
-            await chrome.storage.local.set({ lastActiveUrl: tab.url });
+            // Get the current timer state
+            const now = Date.now();
             
-            // Redirect to break page
-            await chrome.tabs.update(activeInfo.tabId, { url: breakUrl });
+            // Only redirect if the break is still active
+            if (data.timerState.timerEndTime && now < data.timerState.timerEndTime) {
+                const remainingTime = Math.ceil((data.timerState.timerEndTime - now) / 1000);
+                
+                // Store the current URL to return to after break
+                await chrome.storage.local.set({ 
+                    lastActiveUrl: tab.url,
+                    timerState: {
+                        ...data.timerState,
+                        timeLeft: remainingTime
+                    }
+                });
+                
+                // Redirect to break page
+                await chrome.tabs.update(activeInfo.tabId, { url: breakUrl });
+            }
         }
     }
 });

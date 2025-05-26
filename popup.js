@@ -21,6 +21,8 @@ let timeLeft = 0;
 let isRunning = false;
 let currentMode = 'work'; // 'work' or 'break'
 let sessionsCompleted = 0;
+let timerEndTime = 0;
+let lastUpdateTime = 0;
 let settings = {
     workDuration: 25 * 60, // in seconds
     shortBreakDuration: 5 * 60,
@@ -48,20 +50,28 @@ async function init() {
 
     // Restore timer state if exists
     if (data.timerState) {
-        const { mode, timeLeft: savedTime, isRunning: wasRunning } = data.timerState;
+        const { mode, timeLeft: savedTime, isRunning: wasRunning, timerEndTime: savedEndTime } = data.timerState;
         currentMode = mode;
-        timeLeft = savedTime;
         isRunning = wasRunning;
         
-        if (isRunning) {
-            startTimer();
+        if (isRunning && savedEndTime) {
+            timerEndTime = savedEndTime;
+            const now = Date.now();
+            if (now >= timerEndTime) {
+                handleTimerComplete();
+            } else {
+                timeLeft = Math.ceil((timerEndTime - now) / 1000);
+                startTimer();
+            }
+        } else {
+            timeLeft = savedTime;
+            updateDisplay();
         }
     } else {
-        // Default to work mode
         timeLeft = settings.workDuration;
+        updateDisplay();
     }
 
-    updateDisplay();
     setupEventListeners();
 }
 
@@ -97,23 +107,31 @@ function startTimer() {
     startPauseBtn.textContent = 'Pause';
     startPauseBtn.classList.add('paused');
     
-    // Save state
-    saveTimerState();
+    // Calculate when the timer should end
+    timerEndTime = Date.now() + (timeLeft * 1000);
+    lastUpdateTime = Date.now();
     
-    timer = setInterval(() => {
-        timeLeft--;
-        updateDisplay();
-        
-        // Save progress every second
-        if (timeLeft % 5 === 0) {
-            saveTimerState();
-        }
-        
-        if (timeLeft <= 0) {
-            clearInterval(timer);
-            handleTimerComplete();
-        }
-    }, 1000);
+    saveTimerState();
+    timer = setInterval(updateTimer, 100);
+}
+
+function updateTimer() {
+    const now = Date.now();
+    const remaining = Math.ceil((timerEndTime - now) / 1000);
+    timeLeft = Math.max(0, remaining);
+    
+    updateDisplay();
+    
+    // Save progress every 5 seconds
+    if (now - lastUpdateTime >= 5000) {
+        saveTimerState();
+        lastUpdateTime = now;
+    }
+    
+    if (timeLeft <= 0) {
+        clearInterval(timer);
+        handleTimerComplete();
+    }
 }
 
 function pauseTimer() {
@@ -304,12 +322,17 @@ async function saveSettings() {
 
 // Helper Functions
 function saveTimerState() {
+    const now = Date.now();
+    const remainingTime = isRunning ? Math.ceil((timerEndTime - now) / 1000) : timeLeft;
+    
     chrome.storage.local.set({
         timerState: {
             mode: currentMode,
-            timeLeft,
+            timeLeft: remainingTime,
             isRunning,
-            timestamp: Date.now()
+            timestamp: now,
+            timerEndTime: isRunning ? timerEndTime : 0,
+            sessionsCompleted
         }
     });
 }

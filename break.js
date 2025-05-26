@@ -17,6 +17,62 @@ const breakTips = [
 let timeLeft = 0;
 let isBreakActive = true;
 let timer;
+let timerEndTime = 0;
+let lastUpdateTime = 0;
+
+// Timer Functions
+function saveBreakState() {
+    const now = Date.now();
+    const remainingTime = isBreakActive ? Math.ceil((timerEndTime - now) / 1000) : timeLeft;
+    
+    chrome.storage.local.set({
+        timerState: {
+            mode: 'break',
+            timeLeft: remainingTime,
+            isRunning: isBreakActive,
+            timestamp: now,
+            timerEndTime: isBreakActive ? timerEndTime : 0
+        }
+    });
+}
+
+function startBreakTimer() {
+    if (timer) clearInterval(timer);
+    
+    isBreakActive = true;
+    timerEndTime = Date.now() + (timeLeft * 1000);
+    lastUpdateTime = Date.now();
+    
+    saveBreakState();
+    timer = setInterval(updateBreakTimer, 100);
+}
+
+function updateBreakTimer() {
+    const now = Date.now();
+    const remaining = Math.ceil((timerEndTime - now) / 1000);
+    timeLeft = Math.max(0, remaining);
+    
+    updateDisplay();
+    
+    if (now >= timerEndTime) {
+        clearInterval(timer);
+        breakComplete();
+    } else if (now - lastUpdateTime >= 5000) {
+        saveBreakState();
+        lastUpdateTime = now;
+    }
+}
+
+function breakComplete() {
+    clearInterval(timer);
+    isBreakActive = false;
+    resumeBtn.disabled = false;
+    resumeBtn.textContent = 'Resume Working';
+    updateDisplay();
+    
+    // Send message to popup that break has ended
+    chrome.runtime.sendMessage({ type: 'BREAK_ENDED' });
+}
 
 // Initialize the break page
 async function init() {
@@ -27,11 +83,19 @@ async function init() {
     const data = await chrome.storage.local.get(['timerState']);
     
     if (data.timerState && data.timerState.mode === 'break') {
-        timeLeft = data.timerState.timeLeft;
-        isBreakActive = data.timerState.isRunning;
+        const { timeLeft: savedTime, isRunning: wasRunning, timerEndTime: savedEndTime } = data.timerState;
+        timeLeft = savedTime;
+        isBreakActive = wasRunning;
         
-        if (isBreakActive) {
-            startBreakTimer();
+        if (isBreakActive && savedEndTime) {
+            timerEndTime = savedEndTime;
+            const now = Date.now();
+            if (now >= timerEndTime) {
+                breakComplete();
+            } else {
+                timeLeft = Math.ceil((timerEndTime - now) / 1000);
+                startBreakTimer();
+            }
         } else {
             updateDisplay();
         }
@@ -113,19 +177,34 @@ function setupEventListeners() {
     }, true);
 }
 
-// Timer Functions
-function startBreakTimer() {
-    if (timer) clearInterval(timer);
+function endBreak() {
+    clearInterval(timer);
+    isBreakActive = false;
     
-    timer = setInterval(() => {
-        timeLeft--;
-        updateDisplay();
-        
-        if (timeLeft <= 0) {
-            clearInterval(timer);
-            breakComplete();
-        }
-    }, 1000);
+    // Save the break state before ending
+    saveBreakState();
+    
+    // Send message to popup that break has ended
+    chrome.runtime.sendMessage({ type: 'BREAK_ENDED' });
+    
+    // Close the break page
+    window.close();
+}
+
+function updateBreakTimer() {
+    const now = Date.now();
+    const remaining = Math.ceil((timerEndTime - now) / 1000);
+    timeLeft = Math.max(0, remaining);
+    
+    updateDisplay();
+    
+    if (now >= timerEndTime) {
+        clearInterval(timer);
+        breakComplete();
+    } else if (now - lastUpdateTime >= 5000) {
+        saveBreakState();
+        lastUpdateTime = now;
+    }
 }
 
 function breakComplete() {
@@ -150,15 +229,33 @@ function breakComplete() {
     tipElement.textContent = "Click the button below or press space to resume working";
 }
 
+function saveBreakState() {
+    const now = Date.now();
+    const remainingTime = isBreakActive ? Math.ceil((timerEndTime - now) / 1000) : timeLeft;
+    
+    chrome.storage.local.set({
+        timerState: {
+            mode: 'break',
+            timeLeft: remainingTime,
+            isRunning: isBreakActive,
+            timestamp: now,
+            timerEndTime: isBreakActive ? timerEndTime : 0
+        }
+    });
+}
+
 function endBreak() {
-    // Notify the popup that break has ended
+    clearInterval(timer);
+    isBreakActive = false;
+    
+    // Save the break state before ending
+    saveBreakState();
+    
+    // Send message to popup that break has ended
     chrome.runtime.sendMessage({ type: 'BREAK_ENDED' });
     
-    // Close the current tab and return to the last active URL
-    chrome.storage.local.get(['lastActiveUrl'], (data) => {
-        const lastUrl = data.lastActiveUrl || 'chrome://newtab/';
-        chrome.tabs.update({ url: lastUrl });
-    });
+    // Close the break page
+    window.close();
 }
 
 // Display Functions
