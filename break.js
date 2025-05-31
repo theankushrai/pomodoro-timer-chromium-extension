@@ -63,43 +63,105 @@ function updateBreakTimer() {
     }
 }
 
-function breakComplete() {
+async function breakComplete() {
     clearInterval(timer);
     isBreakActive = false;
     resumeBtn.disabled = false;
     resumeBtn.textContent = 'Resume Working';
     updateDisplay();
     
-    // Send message to popup that break has ended
     try {
-        chrome.runtime.sendMessage({ type: 'BREAK_ENDED' }, (response) => {
-            if (chrome.runtime.lastError) {
-                console.log('Error sending message:', chrome.runtime.lastError);
+        // Get the original tab URLs
+        const data = await chrome.storage.local.get('originalTabUrls');
+        if (data.originalTabUrls) {
+            const tabsToRestore = JSON.parse(data.originalTabUrls);
+            
+            // Restore each tab to its original URL
+            for (const tab of tabsToRestore) {
+                try {
+                    await chrome.tabs.update(tab.tabId, { url: tab.url });
+                } catch (error) {
+                    console.warn(`Failed to restore tab ${tab.tabId}:`, error);
+                }
             }
-        });
+            
+            // Clean up the stored URLs
+            await chrome.storage.local.remove('originalTabUrls');
+        }
+        
+        // Send message to popup that break has ended
+        await chrome.runtime.sendMessage({ type: 'BREAK_ENDED' });
     } catch (error) {
-        console.log('Error sending message:', error);
+        console.log('Error during break completion:', error);
     }
 }
 
-function endBreak() {
+async function endBreak() {
     clearInterval(timer);
     isBreakActive = false;
     
     // Save the break state before ending
     saveBreakState();
     
-    // Send message to popup that break was ended manually
     try {
-        chrome.runtime.sendMessage({ type: 'BREAK_ENDED' }, (response) => {
-            if (chrome.runtime.lastError) {
-                console.log('Error sending message:', chrome.runtime.lastError);
+        // Get the original tab URLs and current break tabs
+        const [data, allTabs] = await Promise.all([
+            chrome.storage.local.get('originalTabUrls'),
+            chrome.tabs.query({})
+        ]);
+        
+        if (data.originalTabUrls) {
+            const tabsToRestore = JSON.parse(data.originalTabUrls);
+            const restorePromises = [];
+            const breakUrl = chrome.runtime.getURL('break.html');
+            
+            // Find all break tabs that need to be closed
+            const breakTabs = allTabs.filter(tab => 
+                tab.url && tab.url.includes('break.html')
+            );
+            
+            // Close all break tabs except the current one
+            const closePromises = breakTabs
+                .filter(tab => tab.id !== null && tab.id !== undefined)
+                .map(tab => chrome.tabs.remove(tab.id).catch(e => 
+                    console.warn(`Failed to close tab ${tab.id}:`, e)
+                ));
+            
+            // Restore each tab to its original URL
+            for (const tab of tabsToRestore) {
+                if (tab.tabId !== null && tab.tabId !== undefined) {
+                    restorePromises.push(
+                        chrome.tabs.update(tab.tabId, { 
+                            url: tab.url,
+                            active: false  // Don't activate the tab immediately
+                        }).catch(error => {
+                            console.warn(`Failed to restore tab ${tab.tabId}:`, error);
+                            return null;
+                        })
+                    );
+                }
             }
-        });
+            
+            // Wait for all operations to complete
+            await Promise.all([...restorePromises, ...closePromises]);
+            
+            // Clean up the stored URLs
+            await chrome.storage.local.remove(['originalTabUrls', 'lastActiveUrl']);
+            
+            // Send message to popup that break was ended
+            await chrome.runtime.sendMessage({ type: 'BREAK_ENDED' });
+            
+            // Close this break page
+            window.close();
+        } else {
+            console.warn('No original tab URLs found for restoration');
+            // Still try to notify the popup and close
+            await chrome.runtime.sendMessage({ type: 'BREAK_ENDED' });
+            window.close();
+        }
     } catch (error) {
-        console.log('Error sending message:', error);
-    } finally {
-        // Always close the break page
+        console.error('Error during break end:', error);
+        // Make sure we always close the break page
         window.close();
     }
 }
@@ -206,12 +268,8 @@ async function init() {
 
 // Event Listeners
 function setupEventListeners() {
-    // Resume button
-    resumeBtn.addEventListener('click', () => {
-        if (!resumeBtn.disabled) {
-            endBreak();
-        }
-    });
+    // Resume button - use a named function for better debugging
+    resumeBtn.addEventListener('click', handleResumeClick);
     
     // Prevent right-click context menu
     document.addEventListener('contextmenu', (e) => e.preventDefault());
@@ -234,6 +292,23 @@ function setupEventListeners() {
             return false;
         }
     }, true);
+}
+
+// Handle resume button click
+async function handleResumeClick() {
+    if (resumeBtn.disabled) return;
+    
+    // Disable button to prevent multiple clicks
+    resumeBtn.disabled = true;
+    resumeBtn.textContent = 'Restoring tabs...';
+    
+    try {
+        await endBreak();
+    } catch (error) {
+        console.error('Error in handleResumeClick:', error);
+        // If there's an error, still try to close the break page
+        window.close();
+    }
 }
 
 // Function to format time in MM:SS

@@ -23,6 +23,9 @@ let currentMode = 'work'; // 'work' or 'break'
 let sessionsCompleted = 0;
 let timerEndTime = 0;
 let lastUpdateTime = 0;
+let lastSyncTime = 0;
+const SYNC_INTERVAL = 1000; // Sync every second for UI updates
+const ALARM_INTERVAL = 30000; // 30 seconds for background sync
 let settings = {
     workDuration: 25 * 60, // in seconds
     shortBreakDuration: 5 * 60,
@@ -31,6 +34,9 @@ let settings = {
 
 // Initialize the popup
 async function init() {
+    // Clear any existing alarms to prevent duplicates
+    await chrome.alarms.clear('pomodoroTimer');
+    
     // Load settings from storage
     const data = await chrome.storage.local.get([
         'settings', 
@@ -57,11 +63,20 @@ async function init() {
         if (isRunning && savedEndTime) {
             timerEndTime = savedEndTime;
             const now = Date.now();
-            if (now >= timerEndTime) {
+            const remaining = Math.ceil((timerEndTime - now) / 1000);
+            
+            if (remaining <= 0) {
                 handleTimerComplete();
             } else {
-                timeLeft = Math.ceil((timerEndTime - now) / 1000);
+                timeLeft = remaining;
+                // Restart the timer with the remaining time
                 startTimer();
+                
+                // Make sure the badge is updated
+                const minutes = Math.ceil(remaining / 60);
+                chrome.action.setBadgeText({ text: minutes.toString() });
+                const color = currentMode === 'work' ? '#4a89dc' : '#a0d468';
+                chrome.action.setBadgeBackgroundColor({ color });
             }
         } else {
             timeLeft = savedTime;
@@ -110,8 +125,18 @@ function startTimer() {
     // Calculate when the timer should end
     timerEndTime = Date.now() + (timeLeft * 1000);
     lastUpdateTime = Date.now();
+    lastSyncTime = Date.now();
     
+    // Save state and create/update the alarm
     saveTimerState();
+    
+    // Create or update the alarm to fire every 30 seconds (minimum allowed)
+    chrome.alarms.create('pomodoroTimer', {
+        periodInMinutes: 0.5, // 30 seconds (minimum allowed)
+        when: Date.now() + 30000 // Start in 30 seconds
+    });
+    
+    // Start the UI update
     timer = setInterval(updateTimer, 100);
 }
 
@@ -122,10 +147,16 @@ function updateTimer() {
     
     updateDisplay();
     
-    // Save progress every 5 seconds
-    if (now - lastUpdateTime >= 5000) {
+    // Save state at least every 5 seconds or when time changes significantly
+    if (now - lastUpdateTime >= 5000 || remaining % 30 === 0) {
         saveTimerState();
         lastUpdateTime = now;
+    }
+    
+    // Sync with background state every ALARM_INTERVAL
+    if (now - lastSyncTime >= ALARM_INTERVAL) {
+        saveTimerState();
+        lastSyncTime = now;
     }
     
     if (timeLeft <= 0) {
@@ -139,6 +170,11 @@ function pauseTimer() {
     clearInterval(timer);
     startPauseBtn.textContent = 'Resume';
     startPauseBtn.classList.remove('paused');
+    
+    // Clear the alarm when pausing
+    chrome.alarms.clear('pomodoroTimer');
+    
+    // Save the current state
     saveTimerState();
 }
 
@@ -153,8 +189,14 @@ function resetTimer() {
     updateDisplay();
     startPauseBtn.textContent = 'Start';
     
+    // Clear the alarm
+    chrome.alarms.clear('pomodoroTimer');
+    
     // Clear saved state
     chrome.storage.local.remove(['timerState']);
+    
+    // Clear the badge
+    chrome.action.setBadgeText({ text: '' });
     
     // Update progress bar
     updateProgressBar();
@@ -189,10 +231,26 @@ function handleTimerComplete() {
     }
 }
 
-function startBreak() {
+async function startBreak() {
     // Determine break duration (long break every 4 sessions)
     const isLongBreak = sessionsCompleted % 4 === 0;
     const breakDuration = isLongBreak ? settings.longBreakDuration : settings.shortBreakDuration;
+    
+    // Get all open tabs before starting break
+    const tabs = await chrome.tabs.query({});
+    const tabsToRedirect = [];
+    
+    // Filter out chrome:// and edge:// URLs and the extension's own pages
+    for (const tab of tabs) {
+        if (tab.url && !tab.url.startsWith('chrome://') && 
+            !tab.url.startsWith('edge://') && 
+            !tab.url.includes('break.html')) {
+            tabsToRedirect.push({
+                tabId: tab.id,
+                url: tab.url
+            });
+        }
+    }
     
     // Update state
     currentMode = 'break';
@@ -201,8 +259,8 @@ function startBreak() {
     timerEndTime = Date.now() + (breakDuration * 1000);
     lastUpdateTime = Date.now();
     
-    // Save state with force flag to ensure new break starts fresh
-    chrome.storage.local.set({
+    // Save state with original tab URLs
+    await chrome.storage.local.set({
         timerState: {
             mode: 'break',
             timeLeft: breakDuration,
@@ -211,16 +269,14 @@ function startBreak() {
             timerEndTime: timerEndTime,
             sessionsCompleted: sessionsCompleted
         },
-        // Clear any existing break state
+        originalTabUrls: JSON.stringify(tabsToRedirect),
         lastActiveUrl: null
-    }, () => {
-        // Open break page in new tab
-        const breakUrl = chrome.runtime.getURL('break.html');
-        chrome.tabs.create({ url: breakUrl });
-        
-        // Close popup
-        window.close();
     });
+    
+    // Open break page in new tab and close popup
+    const breakUrl = chrome.runtime.getURL('break.html');
+    await chrome.tabs.create({ url: breakUrl });
+    window.close();
 }
 
 function handleBreakEnd() {

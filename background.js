@@ -56,14 +56,60 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
 });
 
 // Listen for messages from popup and break page
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    if (message.type === 'UPDATE_BADGE') {
+chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+    if (request.type === 'UPDATE_BADGE') {
         updateBadge();
-    } else if (message.type === 'SHOW_NOTIFICATION') {
-        showNotification(message.title, message.options);
+    } else if (request.type === 'SHOW_NOTIFICATION') {
+        showNotification(request.title, request.options);
+    } else if (request.type === 'START_TIMER') {
+        startTimerAlarm();
+    } else if (request.type === 'PAUSE_TIMER') {
+        chrome.alarms.clear('pomodoroTimer');
+    } else if (request.type === 'RESET_TIMER') {
+        chrome.alarms.clear('pomodoroTimer');
+        updateBadge();
+    } else if (request.type === 'BREAK_ENDED') {
+        // Handle break ended - update timer state
+        (async () => {
+            try {
+                // Get the current timer state
+                const data = await chrome.storage.local.get('timerState');
+                
+                // Update timer state to work mode
+                if (data.timerState) {
+                    data.timerState.mode = 'work';
+                    data.timerState.isRunning = false;
+                    data.timerState.timeLeft = 25 * 60; // Reset to default work duration
+                    delete data.timerState.timerEndTime;
+                    
+                    await chrome.storage.local.set({ 
+                        timerState: data.timerState,
+                        // Clear any stored URLs to prevent conflicts
+                        originalTabUrls: null,
+                        lastActiveUrl: null
+                    });
+                }
+                
+                // Update the badge
+                await updateBadge();
+                
+                // Send response if needed
+                if (sendResponse) {
+                    sendResponse({ success: true });
+                }
+            } catch (error) {
+                console.error('Error handling break end:', error);
+                if (sendResponse) {
+                    sendResponse({ success: false, error: error.message });
+                }
+            }
+        })();
+        
+        // Return true to indicate we will send a response asynchronously
+        return true;
     }
     
-    // Return true to indicate we'll respond asynchronously
+    // Return true to indicate we will send a response asynchronously
     return true;
 });
 
@@ -119,23 +165,106 @@ function createNotification(title, options) {
     });
 }
 
+// Helper function to start the timer alarm
+function startTimerAlarm() {
+    // Clear any existing timer
+    chrome.alarms.clear('pomodoroTimer');
+    // Create new alarm that triggers every 30 seconds (minimum allowed)
+    chrome.alarms.create('pomodoroTimer', {
+        periodInMinutes: 0.5, // 30 seconds (minimum allowed)
+        when: Date.now() + 30000 // Start in 30 seconds
+    });
+}
+
 // Keep track of active timers
-chrome.alarms.onAlarm.addListener((alarm) => {
+// Handle timer completion and break page redirection
+chrome.alarms.onAlarm.addListener(async (alarm) => {
     if (alarm.name === 'pomodoroTimer') {
-        // Handle timer completion in the popup
-        chrome.runtime.sendMessage({ type: 'TIMER_COMPLETE' });
+        const data = await chrome.storage.local.get(['timerState']);
+        if (data.timerState?.isRunning) {
+            const now = Date.now();
+            // Calculate remaining time
+            const remaining = Math.ceil((data.timerState.timerEndTime - now) / 1000);
+            
+            if (remaining <= 0) {
+                // Timer completed
+                const isWorkMode = data.timerState.mode === 'work';
+                
+                // If it was work mode, switch to break mode
+                if (isWorkMode) {
+                    const breakUrl = chrome.runtime.getURL('break.html');
+                    // Store the current time as break start time
+                    await chrome.storage.local.set({ 
+                        breakStartTime: Date.now(),
+                        breakUrl: breakUrl
+                    });
+                    
+                    // Get all windows and tabs that need to be redirected
+                    const windows = await chrome.windows.getAll({ populate: true });
+                    const tabsToUpdate = [];
+                    
+                    // Find all tabs that aren't already on the break page
+                    for (const window of windows) {
+                        for (const tab of window.tabs) {
+                            if (!tab.url.includes('break.html') && 
+                                !tab.url.startsWith('chrome://') && 
+                                !tab.url.startsWith('edge://')) {
+                                tabsToUpdate.push({
+                                    tabId: tab.id,
+                                    url: tab.url
+                                });
+                            }
+                        }
+                    }
+                    
+                    // Store the original URLs for all tabs that will be redirected
+                    if (tabsToUpdate.length > 0) {
+                        await chrome.storage.local.set({ 
+                            originalTabUrls: JSON.stringify(tabsToUpdate)
+                        });
+                        
+                        // Redirect all tabs to the break page
+                        for (const tab of tabsToUpdate) {
+                            try {
+                                await chrome.tabs.update(tab.tabId, { url: breakUrl });
+                            } catch (error) {
+                                console.warn(`Failed to update tab ${tab.tabId}:`, error);
+                            }
+                        }
+                    }
+                }
+                
+                // Notify the popup to update its state
+                chrome.runtime.sendMessage({ type: 'TIMER_COMPLETE' });
+                
+                // Clear the badge
+                chrome.action.setBadgeText({ text: '' });
+            } else {
+                // Update badge with remaining minutes
+                const minutes = Math.ceil(remaining / 60);
+                chrome.action.setBadgeText({ text: minutes.toString() });
+                
+                // Set badge color based on mode
+                const color = data.timerState.mode === 'work' ? '#4a89dc' : '#a0d468';
+                chrome.action.setBadgeBackgroundColor({ color });
+            }
+        }
     }
 });
 
 // Initialize
-chrome.runtime.onStartup.addListener(() => {
+chrome.runtime.onStartup.addListener(async () => {
     // Restore any running timers
-    chrome.storage.local.get(['timerState'], (data) => {
-        if (data.timerState?.isRunning) {
-            // Update badge when extension starts
-            updateBadge();
-        }
-    });
+    const data = await chrome.storage.local.get(['timerState']);
+    if (data.timerState?.isRunning) {
+        // If timer was running, restart the background timer
+        startTimerAlarm();
+        // Update badge
+        await updateBadge();
+    } else {
+        // Make sure badge is cleared if no timer is running
+        await updateBadge();
+    }
 });
 
 // Set up context menu
