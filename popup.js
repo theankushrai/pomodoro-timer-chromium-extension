@@ -233,7 +233,7 @@ function handleTimerComplete() {
 
 async function startBreak() {
     // Determine break duration (long break every 4 sessions)
-    const isLongBreak = sessionsCompleted % 4 === 0;
+    const isLongBreak = sessionsCompleted > 0 && sessionsCompleted % 4 === 0;
     const breakDuration = isLongBreak ? settings.longBreakDuration : settings.shortBreakDuration;
     
     // Get all open tabs before starting break

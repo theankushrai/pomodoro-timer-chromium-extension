@@ -186,7 +186,7 @@ async function init() {
     // Get sessions completed count
     const sessionsData = await chrome.storage.local.get('sessionsCompleted');
     const sessionsCompleted = sessionsData.sessionsCompleted || 0;
-    const isLongBreak = sessionsCompleted % 4 === 0;
+    const isLongBreak = sessionsCompleted > 0 && sessionsCompleted % 4 === 0;
     
     // Check if we have a valid running break timer
     if (timerData.timerState && 
