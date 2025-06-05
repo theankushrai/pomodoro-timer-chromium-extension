@@ -1,4 +1,48 @@
 <!DOCTYPE html>
+<!--
+POMODORO TIMER - BREAK.HTML
+
+UI Structure:
+┌─────────────────────────────────────────────┐
+│  ⏱️ Time for a Break!          [✕]        │
+├─────────────────────────────────────────────┤
+│  ┌─────────────────────────────────────┐   │
+│  │               05:00                │   │
+│  └─────────────────────────────────────┘   │
+│  ┌─────────────────────────────────────┐   │
+│  │ ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ │   │
+│  └─────────────────────────────────────┘   │
+│  ┌─────────────────────────────────────┐   │
+│  │  Time for a short break!            │   │
+│  │  Look away from the screen.         │   │
+│  │  Stretch your body.                 │   │
+│  └─────────────────────────────────────┘   │
+│  ┌─────────────────────────────────────┐   │
+│  │        Resume Working (Space)       │   │
+│  └─────────────────────────────────────┘   │
+└─────────────────────────────────────────────┘
+
+Element IDs:
+• breakTimer - Break timer display
+• breakProgress - Progress bar
+• breakMessage - Break message
+• breakTip - Break tip/advice
+• resumeBtn - Resume working button
+
+Key Event Handlers:
+1. resumeBtn.onclick → endBreak()
+2. document.onkeyup → Checks for Space key to end break
+
+Break Types:
+1. Short Break (5 min) - After 1-3 work sessions
+2. Long Break (15 min) - After 4 work sessions
+
+Dynamic Content:
+• Break duration updates every second
+• Progress bar fills as time passes
+• Random break tip shown on load
+-->
+
 <html lang="en">
 <head>
     <meta charset="UTF-8">

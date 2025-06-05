@@ -1,4 +1,50 @@
 <!DOCTYPE html>
+<!--
+POMODORO TIMER - POPUP.HTML
+
+UI Structure:
+┌─────────────────────────────────────────────┐
+│  ⏱️ Pomodoro Timer              [⚙️] [✕]  │
+├─────────────────────────────────────────────┤
+│  ┌─────────────────────────────────────┐   │
+│  │               25:00                │   │
+│  └─────────────────────────────────────┘   │
+│  ┌─────────────────────────────────────┐   │
+│  │ ███████████████████░░░░░░░░ 65%     │   │
+│  └─────────────────────────────────────┘   │
+│  ┌─────────────┐ ┌─────────────┐          │
+│  │   Start     │ │   Reset     │          │
+│  └─────────────┘ └─────────────┘          │
+│                                           │
+│  Sessions: 3/4                            │
+└─────────────────────────────────────────────┘
+
+Element IDs:
+• timer - Main timer display
+• status - Status text (Working/Break)
+• startPauseBtn - Start/Pause button
+• resetBtn - Reset button
+• progress - Progress bar fill
+• sessionCount - Session counter
+• settingsBtn - Settings button
+• settingsModal - Settings modal
+• workDuration - Work duration input
+• shortBreakDuration - Short break input
+• longBreakDuration - Long break input
+
+Key Event Handlers:
+1. startPauseBtn.onclick → toggleTimer()
+2. resetBtn.onclick → resetTimer()
+3. settingsBtn.onclick → openSettings()
+4. saveSettingsBtn.onclick → saveSettings()
+5. closeSettingsBtn.onclick → closeSettings()
+
+CSS Classes:
+• work-mode - Applied during work sessions
+• break-mode - Applied during break sessions
+• paused - Applied when timer is paused
+-->
+
 <html lang="en">
 <head>
     <meta charset="UTF-8">

@@ -1,4 +1,73 @@
 /* ===== POMODORO TIMER POPUP SCRIPT =====
+ * 
+ * ASCII Flowchart:
+ * 
+ * ╔════════════════╗     ┌─────────────────────────────────────────────┐
+ * │  popup.html    │     │                  init()                    │
+ * │  Loaded        ├────>│  • Loads settings                         │
+ * ╚════════════════╝     │  • Restores timer state                   │
+ *                        │  • Sets up UI elements                    │
+ *                        └───────────────┬───────────────────────────┘
+ *                                         │
+ *                                         │ 1. Initializes event listeners
+ *                                         ▼
+ *                        ┌────────────────┼─────────────────┐
+ *                        │    setupEventListeners()         │
+ *                        └────────┬────────┬────────┬───────┘
+ *                                 │        │        │
+ *                      ┌──────────┘        │        └───────────────┐
+ *                      │                   │                        │
+ *                      ▼                   ▼                        ▼
+ *             ┌────────────────┐  ┌───────────────┐  ┌────────────────────┐
+ *             │  Start/Pause   │  │    Reset      │  │     Settings       │
+ *             │  Button Click  │  │    Button     │  │     Button Click   │
+ *             └────────┬───────┘  └───────┬───────┘  └─────────┬──────────┘
+ *                      │                  │                     │
+ *                      ▼                  ▼                     ▼
+ *             ┌─────────────────┐ ┌───────────────┐  ┌───────────────────┐
+ *             │  toggleTimer()  │ │  resetTimer() │  │   openSettings()  │
+ *             └────────┬────────┘ └───────────────┘  └─────────┬─────────┘
+ *                      │                                        │
+ *                      │ 2. If starting                       │
+ *                      ▼                                        │
+ *             ┌─────────────────┐                              │
+ *             │   startTimer()  │◄─────────────────────────────┘
+ *             │  • Sets end time│
+ *             │  • Saves state  │
+ *             └────────┬────────┘
+ *                      │
+ *                      │ 3. Updates every 100ms
+ *                      ▼
+ *             ┌─────────────────┐     +---------------------+
+ *             │   updateTimer() │◄────┤  setInterval loop   │
+ *             └────────┬────────┘     +---------------------+
+ *                      │
+ *                      │ 4. When time runs out
+ *                      ▼
+ *             ┌─────────────────┐     +---------------------+
+ *             │ handleTimer-    │     │  Timer Complete!    │
+ *             │ Complete()      │◄────┤  • Plays sound      │
+ *             └────────┬────────┘     │  • Shows alert     │
+ *                      │              +---------------------+
+ *                      │
+ *                      │ 5. If work completed
+ *                      ▼
+ *             ┌─────────────────┐
+ *             │   startBreak()  │
+ *             │  • Saves tabs   │
+ *             │  • Opens break  │
+ *             │    page         │
+ *             └─────────────────┘
+ * 
+ * State Transitions:
+ * 1. STOPPED → RUNNING: User clicks "Start"
+ * 2. RUNNING → PAUSED: User clicks "Pause"
+ * 3. PAUSED → RUNNING: User clicks "Resume"
+ * 4. RUNNING → COMPLETE: Timer reaches zero
+ * 5. COMPLETE → (Next State): Auto-starts break/work
+ */
+
+/* ===== POMODORO TIMER POPUP SCRIPT =====
 This script manages the main timer interface that appears when you click the extension icon.
 It handles the Pomodoro work/break cycle, timer controls, and user settings.
 */
@@ -130,6 +199,15 @@ function setupEventListeners() {
     settingsBtn.addEventListener('click', openSettings);      // Open settings
     closeSettingsBtn.addEventListener('click', closeSettings); // Close settings
     saveSettingsBtn.addEventListener('click', saveSettings);  // Save settings
+    
+    // Listen for break end messages from break page
+    chrome.runtime.onMessage.addListener((message) => {
+        if (message.type === 'BREAK_ENDED') {
+            console.log('Break ended, switching to work mode');
+            handleBreakEnd(message.manualResume || false);
+        }
+        return true;
+    });
     
     // Close settings when clicking outside the modal
     window.addEventListener('click', (e) => {
@@ -399,18 +477,24 @@ async function startBreak() {
 
 /**
  * Handles the end of a break period when triggered from the break page.
- * This function is called via a message from the break page.
+ * @param {boolean} manualResume - Whether the break was ended manually by the user
  */
-function handleBreakEnd() {
-    console.log('Break ended by user');
+function handleBreakEnd(manualResume = false) {
+    console.log(`Break ended${manualResume ? ' manually' : ' automatically'}`);
     switchToWorkMode();
+    
+    // If this was a manual resume, start the work timer
+    if (manualResume) {
+        console.log('Starting work timer after manual resume');
+        startTimer();
+    }
 }
 
 /**
  * Switches from break mode back to work mode.
- * Updates the UI, resets the timer, and handles tab restoration.
+ * Updates the UI and resets the timer state.
  */
-async function switchToWorkMode() {
+function switchToWorkMode() {
     console.log('Switching to work mode');
     
     // Update timer state for work mode
@@ -424,48 +508,6 @@ async function switchToWorkMode() {
     
     // Save the new state
     saveTimerState();
-    
-    try {
-        // Get the last active URL from storage
-        const data = await chrome.storage.local.get(['lastActiveUrl', 'originalTabUrls']);
-        const lastUrl = data.lastActiveUrl || 'chrome://newtab/';
-        
-        // Find and close the break page tab
-        const tabs = await chrome.tabs.query({});
-        for (const tab of tabs) {
-            if (tab.url && tab.url.includes('break.html')) {
-                await chrome.tabs.remove(tab.id);
-                break;
-            }
-        }
-        
-        // Restore original tabs if they exist
-        if (data.originalTabUrls) {
-            const tabsToRestore = JSON.parse(data.originalTabUrls);
-            console.log(`Restoring ${tabsToRestore.length} tabs`);
-            
-            // Close all current tabs except the new tab page
-            const currentTabs = await chrome.tabs.query({});
-            for (const tab of currentTabs) {
-                if (tab.url && !tab.url.startsWith('chrome://newtab/')) {
-                    await chrome.tabs.remove(tab.id);
-                }
-            }
-            
-            // Reopen the original tabs
-            for (const tab of tabsToRestore) {
-                await chrome.tabs.create({ url: tab.url, active: false });
-            }
-        }
-        
-        // Clean up stored data
-        await chrome.storage.local.remove(['originalTabUrls', 'lastActiveUrl']);
-        
-    } catch (error) {
-        console.error('Error during work mode switch:', error);
-        // Fallback to just updating the display if something goes wrong
-        updateDisplay();
-    }
 }
 
 // Display Functions

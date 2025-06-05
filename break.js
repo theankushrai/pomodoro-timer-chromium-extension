@@ -1,4 +1,61 @@
 /* ===== BREAK PAGE SCRIPT =====
+ * 
+ * ASCII Flowchart:
+ * 
+ * ╔════════════════╗     ┌─────────────────────────────────────────────┐
+ * │  break.html    │     │                  init()                    │
+ * │  Loaded        ├────>│  • Loads settings                         │
+ * ╚════════════════╝     │  • Restores break state                   │
+ *                        │  • Starts break timer                    │
+ *                        └───────────────┬───────────────────────────┘
+ *                                         │
+ *                                         │ 1. Sets up break timer
+ *                                         ▼
+ *                        ┌────────────────┼─────────────────┐
+ *                        │   startBreakTimer()              │
+ *                        │  • Sets break duration           │
+ *                        │  • Starts interval               │
+ *                        └────────┬────────┬────────────────┘
+ *                                 │        │
+ *                                ▼        ▼
+ *                      +------------------+  +---------------------+
+ *                      |  updateBreakTimer() |    breakComplete()  |
+ *                      |  • Updates display  |<───┐ • Shows resume  |
+ *                      |  • Checks time left |    │   button       |
+ *                      +------------------+  |    │                |
+ *                                 │         |    │ 3. When time's up
+ *                                 ▼         |    │
+ *                        +----------------+ |    │
+ *                        | timeLeft > 0?  |─┘    │
+ *                        +--------+-------+      │
+ *                                 │              │
+ *                                 ▼              │
+ *                        ┌────────────────┐     │
+ *                        │ Continue       │     │
+ *                        │ counting down  │─────┘
+ *                        └────────────────┘
+ * 
+ * Event Flow:
+ * 1. User clicks "Resume" ────────┐
+ *    │                           │
+ *    ▼                           │
+ * 2. endBreak()                  │
+ *    • Restores tabs             │
+ *    • Closes break page         │
+ *    • Sends message to popup    │
+ *    └───────────────────────────┘
+ *
+ * Key Functions:
+ * - init(): Entry point, sets up the break page
+ * - startBreakTimer(): Starts the countdown
+ * - updateBreakTimer(): Updates the display and checks time
+ * - breakComplete(): Handles break completion
+ * - endBreak(): Called when user ends break early
+ * - saveBreakState(): Persists break state
+ */
+
+
+/* ===== BREAK PAGE SCRIPT =====
 This script handles the break page functionality of the Pomodoro timer.
 It shows a countdown timer, prevents users from working during breaks,
 and manages the break session state.
@@ -107,130 +164,106 @@ function updateBreakTimer() {
  */
 async function breakComplete() {
     // Stop the timer and update the UI
+    // Just update the UI to show break is complete
     clearInterval(timer);
     isBreakActive = false;
     resumeBtn.disabled = false;  // Enable the resume button
     resumeBtn.textContent = 'Resume Working';
     updateDisplay();
-    
-    try {
-        // Get the list of tabs we need to restore from Chrome storage
-        const data = await chrome.storage.local.get('originalTabUrls');
-        
-        // If we have tabs to restore...
-        if (data.originalTabUrls) {
-            // Parse the stored tab data (it was stored as a JSON string)
-            const tabsToRestore = JSON.parse(data.originalTabUrls);
-            
-            // Restore each tab to its original URL
-            for (const tab of tabsToRestore) {
-                try {
-                    // Update the tab's URL back to its original
-                    await chrome.tabs.update(tab.tabId, { url: tab.url });
-                } catch (error) {
-                    // If a tab can't be restored (maybe it was closed), just log a warning
-                    console.warn(`Failed to restore tab ${tab.tabId}:`, error);
-                }
-            }
-            
-            // Clean up the stored URLs since we're done with them
-            await chrome.storage.local.remove('originalTabUrls');
-        }
-        
-        // Notify the popup that the break has ended
-        await chrome.runtime.sendMessage({ type: 'BREAK_ENDED' });
-    } catch (error) {
-        // If anything goes wrong, log the error but don't crash
-        console.log('Error during break completion:', error);
-    }
 }
 
 /**
- * Ends the break early when the user clicks 'Resume Working'.
- * This function restores all tabs to their original state and cleans up.
+ * Ends the break and restores the original tab state.
+ * This function is called when the user clicks 'Resume Working'.
+ * Handles multiple break pages by coordinating tab restoration.
  */
 async function endBreak() {
     // Stop any running timers and update the break state
     clearInterval(timer);
     isBreakActive = false;
     
-    // Save the current state before making changes
-    saveBreakState();
-    
     try {
-        // Get both the stored tab URLs and all currently open tabs in parallel
-        const [data, allTabs] = await Promise.all([
-            chrome.storage.local.get('originalTabUrls'),  // Get stored tab data
-            chrome.tabs.query({})  // Get all currently open tabs
-        ]);
+        // Get saved tab data - this is the critical section
+        const data = await chrome.storage.local.get(['originalTabUrls', 'lastActiveUrl']);
         
-        // If we have tabs to restore...
-        if (data.originalTabUrls) {
-            // Parse the stored tab data
-            const tabsToRestore = JSON.parse(data.originalTabUrls);
-            const restorePromises = [];  // Will store all our tab restoration promises
-            
-            // Get the URL of the break page (so we can identify break tabs)
-            const breakUrl = chrome.runtime.getURL('break.html');
-            
-            // Find all tabs that are currently showing the break page
-            const breakTabs = allTabs.filter(tab => 
-                tab.url && tab.url.includes('break.html')
-            );
-            
-            // Close all break tabs (including this one)
-            // First filter out any invalid tab IDs, then create close promises
-            const closePromises = breakTabs
-                .filter(tab => tab.id !== null && tab.id !== undefined)
-                .map(tab => chrome.tabs.remove(tab.id).catch(e => 
-                    console.warn(`Failed to close tab ${tab.id}:`, e)
-                ));
-            
-            // Restore each tab to its original URL
-            for (const tab of tabsToRestore) {
-                if (tab.tabId !== null && tab.tabId !== undefined) {
-                    // For each tab, create a promise to restore its URL
-                    restorePromises.push(
-                        chrome.tabs.update(tab.tabId, { 
-                            url: tab.url,  // Original URL
-                            active: false  // Don't switch to this tab
-                        }).catch(error => {
-                            console.warn(`Failed to restore tab ${tab.tabId}:`, error);
-                            return null;  // Continue even if one tab fails
-                        })
-                    );
-                }
-            }
-            
-            // Wait for all tab operations to complete (both closing breaks and restoring tabs)
-            await Promise.all([...restorePromises, ...closePromises]);
-            
-            // Clean up our stored data since we're done with it
-            await chrome.storage.local.remove(['originalTabUrls', 'lastActiveUrl']);
-            
-            // Notify the popup that the break was ended
-            await chrome.runtime.sendMessage({ type: 'BREAK_ENDED' });
-            
-            // Close this break page (we're done with it)
+        // If no tabs to restore, just close this break page
+        if (!data.originalTabUrls) {
+            console.log('No tabs to restore - might be a duplicate break end');
             window.close();
-        } else {
-            // If we couldn't find any tabs to restore, still try to clean up
-            console.warn('No original tab URLs found for restoration');
-            await chrome.runtime.sendMessage({ type: 'BREAK_ENDED' });
-            window.close();
+            return;
         }
+        
+        // Parse the tab data we need to restore
+        const tabsToRestore = JSON.parse(data.originalTabUrls);
+        
+        // Get all tabs to find break pages
+        const allTabs = await chrome.tabs.query({});
+        const breakTabs = allTabs.filter(tab => 
+            tab.url && tab.url.includes('break.html')
+        );
+        
+        // 1. First close other break pages
+        const closePromises = breakTabs
+            .filter(tab => tab.id && tab.id !== window.tabId) // Don't close self yet
+            .map(tab => chrome.tabs.remove(tab.id).catch(console.error));
+        
+        // 2. Restore original tabs in parallel
+        const restorePromises = tabsToRestore.map(tab => 
+            chrome.tabs.create({ 
+                url: tab.url, 
+                active: false 
+            }).catch(e => 
+                console.warn(`Failed to restore tab ${tab.url}:`, e)
+            )
+        );
+        
+        // Wait for all tab operations to complete
+        await Promise.all([...closePromises, ...restorePromises]);
+        
+        // 3. Only now remove the tab data, after we're done with it
+        await chrome.storage.local.remove(['originalTabUrls', 'lastActiveUrl']);
+        
+        // 4. Notify the popup that break has ended
+        await chrome.runtime.sendMessage({ 
+            type: 'BREAK_ENDED',
+            manualResume: true
+        });
+        
+        // 5. Finally, close this break tab
+        // The delay ensures all other operations complete first
+        setTimeout(() => window.close(), 100);
     } catch (error) {
-        // If anything goes wrong, log the error but still try to close
         console.error('Error during break end:', error);
-        window.close();
+        // Try to clean up and close even if there was an error
+        try {
+            await chrome.runtime.sendMessage({ 
+                type: 'BREAK_ENDED', 
+                manualResume: true 
+            });
+            window.close();
+        } catch (e) {
+            console.error('Failed to clean up after error:', e);
+        }
     }
+    
+    // Save the current state
+    saveBreakState();
 }
 
 /**
  * Initializes the break page when it loads.
  * Sets up the timer, loads settings, and restores any existing break state.
  */
+// Track the current tab ID
+let currentTabId;
+
 async function init() {
+    // Store the current tab ID for later use
+    const tab = await chrome.tabs.getCurrent();
+    if (tab && tab.id) {
+        window.tabId = tab.id;
+    }
+    
     // Show a random helpful tip to the user
     showRandomTip();
     
