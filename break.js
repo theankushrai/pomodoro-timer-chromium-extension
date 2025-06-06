@@ -1,3 +1,32 @@
+// ===== CENTRALIZED LOGGER =====
+function sendToBackgroundLog(level, ...args) {
+    // Fallback to local console if sending fails for some reason
+    try {
+        chrome.runtime.sendMessage({
+            type: 'LOG_MESSAGE',
+            payload: {
+                level: level, // 'log', 'warn', 'error'
+                senderComponent: 'break',
+                args: args
+            }
+        }).catch(e => originalConsole[level]('[BREAK_FALLBACK]', ...args)); // Log locally if send fails
+    } catch (e) {
+        originalConsole[level]('[BREAK_FALLBACK]', ...args); // Log locally if sendMessage not available (e.g., during very early init)
+    }
+}
+
+// Store original console functions before overriding
+const originalConsole = {
+    log: console.log.bind(console),
+    warn: console.warn.bind(console),
+    error: console.error.bind(console)
+};
+
+console.log = (...args) => sendToBackgroundLog('log', ...args);
+console.warn = (...args) => sendToBackgroundLog('warn', ...args);
+console.error = (...args) => sendToBackgroundLog('error', ...args);
+// ===== END CENTRALIZED LOGGER =====
+
 /* ===== BREAK PAGE SCRIPT =====
  * 
  * ASCII Flowchart:
@@ -178,71 +207,115 @@ async function breakComplete() {
  * Handles multiple break pages by coordinating tab restoration.
  */
 async function endBreak() {
+    console.log('[BREAK] endBreak() called');
     // Stop any running timers and update the break state
     clearInterval(timer);
     isBreakActive = false;
+    console.log('[BREAK] Timers cleared, isBreakActive set to false');
     
     try {
+        console.log('[BREAK] Fetching tab data from storage');
         // Get saved tab data - this is the critical section
         const data = await chrome.storage.local.get(['originalTabUrls', 'lastActiveUrl']);
+        console.log('[BREAK] Retrieved data from storage:', { 
+            hasOriginalTabUrls: !!data.originalTabUrls,
+            hasLastActiveUrl: !!data.lastActiveUrl 
+        });
         
         // If no tabs to restore, just close this break page
         if (!data.originalTabUrls) {
-            console.log('No tabs to restore - might be a duplicate break end');
+            console.log('[BREAK] No tabs to restore - might be a duplicate break end');
             window.close();
             return;
         }
         
         // Parse the tab data we need to restore
+        console.log('[BREAK] Parsing tab data');
         const tabsToRestore = JSON.parse(data.originalTabUrls);
+        console.log(`[BREAK] Found ${tabsToRestore.length} tabs to restore`);
         
         // Get all tabs to find break pages
+        console.log('[BREAK] Querying all tabs');
         const allTabs = await chrome.tabs.query({});
         const breakTabs = allTabs.filter(tab => 
             tab.url && tab.url.includes('break.html')
         );
+        console.log(`[BREAK] Found ${breakTabs.length} break tabs open`);
         
         // 1. First close other break pages
-        const closePromises = breakTabs
-            .filter(tab => tab.id && tab.id !== window.tabId) // Don't close self yet
-            .map(tab => chrome.tabs.remove(tab.id).catch(console.error));
+        const tabsToClose = breakTabs.filter(tab => tab.id && tab.id !== window.tabId);
+        console.log(`[BREAK] Preparing to close ${tabsToClose.length} other break tabs`);
+        
+        const closePromises = tabsToClose.map(tab => {
+            console.log(`[BREAK] Closing tab ${tab.id}: ${tab.url}`);
+            return chrome.tabs.remove(tab.id).catch(error => {
+                console.error(`[BREAK] Error closing tab ${tab.id}:`, error);
+                throw error; // Re-throw to be caught by the outer catch
+            });
+        });
         
         // 2. Restore original tabs in parallel
-        const restorePromises = tabsToRestore.map(tab => 
-            chrome.tabs.create({ 
+        console.log('[BREAK] Starting to restore original tabs');
+        const restorePromises = tabsToRestore.map((tab, index) => {
+            console.log(`[BREAK] Restoring tab ${index + 1}/${tabsToRestore.length}: ${tab.url}`);
+            return chrome.tabs.create({ 
                 url: tab.url, 
                 active: false 
-            }).catch(e => 
-                console.warn(`Failed to restore tab ${tab.url}:`, e)
-            )
-        );
+            }).then(newTab => {
+                console.log(`[BREAK] Successfully restored tab to ${tab.url} (new tab ID: ${newTab.id})`);
+                return newTab;
+            }).catch(error => {
+                console.error(`[BREAK] Failed to restore tab ${tab.url}:`, error);
+                throw error; // Re-throw to be caught by the outer catch
+            });
+        });
         
         // Wait for all tab operations to complete
         await Promise.all([...closePromises, ...restorePromises]);
         
         // 3. Only now remove the tab data, after we're done with it
+        console.log('[BREAK] Removing tab data from storage');
         await chrome.storage.local.remove(['originalTabUrls', 'lastActiveUrl']);
+        console.log('[BREAK] Tab data removed from storage');
         
         // 4. Notify the popup that break has ended
-        await chrome.runtime.sendMessage({ 
-            type: 'BREAK_ENDED',
-            manualResume: true
-        });
+        console.log('[BREAK] Sending BREAK_ENDED message to popup');
+        try {
+            await chrome.runtime.sendMessage({ 
+                type: 'BREAK_ENDED',
+                manualResume: true
+            });
+            console.log('[BREAK] Successfully sent BREAK_ENDED message');
+        } catch (error) {
+            console.error('[BREAK] Failed to send BREAK_ENDED message:', error);
+            throw error; // Re-throw to be caught by the outer catch
+        }
         
         // 5. Finally, close this break tab
-        // The delay ensures all other operations complete first
-        setTimeout(() => window.close(), 100);
+        console.log('[BREAK] Scheduling tab close in 100ms');
+        setTimeout(() => {
+            console.log('[BREAK] Closing break tab now');
+            window.close();
+        }, 100);
     } catch (error) {
-        console.error('Error during break end:', error);
+        console.error('[BREAK] Error during break end:', error);
         // Try to clean up and close even if there was an error
         try {
+            console.log('[BREAK] Attempting error recovery - sending BREAK_ENDED message');
             await chrome.runtime.sendMessage({ 
                 type: 'BREAK_ENDED', 
                 manualResume: true 
             });
+            console.log('[BREAK] Error recovery message sent, closing tab');
             window.close();
         } catch (e) {
-            console.error('Failed to clean up after error:', e);
+            console.error('[BREAK] Failed to clean up after error:', e);
+            // One last attempt to close the tab
+            try {
+                window.close();
+            } catch (finalError) {
+                console.error('[BREAK] Failed to close tab:', finalError);
+            }
         }
     }
     
@@ -257,67 +330,117 @@ async function endBreak() {
 // Track the current tab ID
 let currentTabId;
 
-async function init() {
-    // Store the current tab ID for later use
-    const tab = await chrome.tabs.getCurrent();
-    if (tab && tab.id) {
-        window.tabId = tab.id;
-    }
-    
-    // Show a random helpful tip to the user
-    showRandomTip();
-    
-    // Load both settings and timer state in parallel for better performance
-    const [settingsData, timerData] = await Promise.all([
-        chrome.storage.local.get('settings'),  // Get user settings
-        chrome.storage.local.get('timerState') // Get current timer state
-    ]);
-    
-    // Default settings in case none are found in storage
-    const settings = settingsData.settings || {
-        workDuration: 25 * 60,       // 25 minutes work
-        shortBreakDuration: 5 * 60,  // 5 minutes short break
-        longBreakDuration: 15 * 60   // 15 minutes long break
-    };
-    
-    // Get the number of completed work sessions
-    const sessionsData = await chrome.storage.local.get('sessionsCompleted');
-    const sessionsCompleted = sessionsData.sessionsCompleted || 0;
-    // Every 4th break is a long break
-    const isLongBreak = sessionsCompleted > 0 && sessionsCompleted % 4 === 0;
-    
-    // Check if we have a valid running break timer in storage
-    if (timerData.timerState && 
-        timerData.timerState.mode === 'break' && 
-        timerData.timerState.isRunning &&
-        timerData.timerState.timerEndTime) {
-        
-        // Calculate how much time is left in the break
-        const now = Date.now();
-        const timeRemaining = Math.ceil((timerData.timerState.timerEndTime - now) / 1000);
-        
-        if (timeRemaining > 0) {
-            // If we have time left, continue the existing break
-            timeLeft = timeRemaining;
-            isBreakActive = true;
-            timerEndTime = timerData.timerState.timerEndTime;
-            startBreakTimer();
-        } else {
-            // If time is up, handle the completed break
-            breakComplete();
-        }
+// Enable the resume button and set up event listeners
+function enableResumeButton() {
+    console.log('[BREAK] Enabling resume button');
+    if (resumeBtn) {
+        resumeBtn.disabled = false;
+        // Remove any existing event listeners to prevent duplicates
+        const newBtn = resumeBtn.cloneNode(true);
+        resumeBtn.parentNode.replaceChild(newBtn, resumeBtn);
+        newBtn.addEventListener('click', endBreak);
+        // Add keyboard support for accessibility
+        newBtn.addEventListener('keydown', (e) => {
+            if (e.key === ' ' || e.key === 'Enter') {
+                e.preventDefault();
+                endBreak();
+            }
+        });
+        console.log('[BREAK] Resume button enabled with event listeners');
     } else {
-        // If no valid break state found, start a new break
-        isBreakActive = true;
-        // Choose between long or short break based on session count
-        timeLeft = isLongBreak ? settings.longBreakDuration : settings.shortBreakDuration;
-        startBreakTimer();
+        console.error('[BREAK] Could not find resume button');
     }
-    
-    // Set up event listeners
-    resumeBtn.addEventListener('click', endBreak);  // Handle resume button click
-    document.addEventListener('keydown', handleKeyDown);  // Handle keyboard shortcuts
 }
+
+async function init() {
+    console.log('[BREAK] Initializing break page');
+    
+    try {
+        // Store the current tab ID for later use
+        const tab = await chrome.tabs.getCurrent();
+        if (tab && tab.id) {
+            window.tabId = tab.id;
+            console.log(`[BREAK] Current tab ID: ${window.tabId}`);
+        }
+        
+        // Show a random helpful tip to the user
+        showRandomTip();
+        
+        // Enable the resume button
+        enableResumeButton();
+        
+        // Load both settings and timer state in parallel for better performance
+        console.log('[BREAK] Loading settings and timer state');
+        const [settingsData, timerData] = await Promise.all([
+            chrome.storage.local.get('settings'),
+            chrome.storage.local.get('timerState')
+        ]);
+        
+        // Default settings in case none are found in storage
+        const settings = settingsData.settings || {
+            workDuration: 25 * 60,       // 25 minutes work
+            shortBreakDuration: 5 * 60,   // 5 minutes short break
+            longBreakDuration: 15 * 60    // 15 minutes long break
+        };
+        
+        // Get the number of completed work sessions
+        const sessionsData = await chrome.storage.local.get('sessionsCompleted');
+        const sessionsCompleted = sessionsData.sessionsCompleted || 0;
+        // Every 4th break is a long break
+        const isLongBreak = sessionsCompleted > 0 && sessionsCompleted % 4 === 0;
+        
+        console.log('[BREAK] Break page initialized', {
+            sessionsCompleted,
+            isLongBreak,
+            hasTimerState: !!timerData.timerState,
+            timerState: timerData.timerState
+        });
+        
+        // Check if we have a valid running break timer in storage
+        if (timerData.timerState && 
+            timerData.timerState.mode === 'break' && 
+            timerData.timerState.isRunning &&
+            timerData.timerState.timerEndTime) {
+            
+            // Calculate how much time is left in the break
+            const now = Date.now();
+            const timeRemaining = Math.ceil((timerData.timerState.timerEndTime - now) / 1000);
+            
+            console.log(`[BREAK] Resuming existing break with ${timeRemaining} seconds remaining`);
+            
+            if (timeRemaining > 0) {
+                // If we have time left, continue the existing break
+                timeLeft = timeRemaining;
+                isBreakActive = true;
+                timerEndTime = timerData.timerState.timerEndTime;
+                startBreakTimer();
+            } else {
+                // If time is up, handle the completed break
+                console.log('[BREAK] Break time already completed, showing resume option');
+                breakComplete();
+            }
+        } else {
+            // If no valid break state found, start a new break
+            console.log('[BREAK] Starting new break');
+            isBreakActive = true;
+            // Choose between long or short break based on session count
+            timeLeft = isLongBreak ? settings.longBreakDuration : settings.shortBreakDuration;
+            startBreakTimer();
+        }
+        
+        // Set up event listeners (only keyboard, click is handled by enableResumeButton)
+        document.addEventListener('keydown', handleKeyDown);  // Handle keyboard shortcuts
+        
+        console.log('[BREAK] Initialization complete');
+    } catch (error) {
+        console.error('[BREAK] Error during initialization:', error);
+        // Try to recover by enabling the resume button
+        if (resumeBtn) {
+            resumeBtn.disabled = false;
+            resumeBtn.addEventListener('click', endBreak);
+        }
+    }
+    }
 
 /**
  * Displays a random break tip to the user.

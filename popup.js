@@ -1,3 +1,32 @@
+// ===== CENTRALIZED LOGGER =====
+function sendToBackgroundLog(level, ...args) {
+    // Fallback to local console if sending fails for some reason
+    try {
+        chrome.runtime.sendMessage({
+            type: 'LOG_MESSAGE',
+            payload: {
+                level: level, // 'log', 'warn', 'error'
+                senderComponent: 'popup',
+                args: args
+            }
+        }).catch(e => originalConsole[level]('[POPUP_FALLBACK]', ...args)); // Log locally if send fails
+    } catch (e) {
+        originalConsole[level]('[POPUP_FALLBACK]', ...args); // Log locally if sendMessage not available (e.g., during very early init)
+    }
+}
+
+// Store original console functions before overriding
+const originalConsole = {
+    log: console.log.bind(console),
+    warn: console.warn.bind(console),
+    error: console.error.bind(console)
+};
+
+console.log = (...args) => sendToBackgroundLog('log', ...args);
+console.warn = (...args) => sendToBackgroundLog('warn', ...args);
+console.error = (...args) => sendToBackgroundLog('error', ...args);
+// ===== END CENTRALIZED LOGGER =====
+
 /* ===== POMODORO TIMER POPUP SCRIPT =====
  * 
  * ASCII Flowchart:
@@ -228,6 +257,76 @@ function setupEventListeners() {
             closeSettings();
         }
     });
+
+    // Listen for messages from other parts of the extension (e.g., break.js, background.js)
+    chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+        console.log('[POPUP] Received message:', { type: message?.type, sender: sender?.tab?.url || 'background', message });
+        
+        // Handle timer state updates from background
+        if (message.type === 'TIMER_STATE_UPDATE') {
+            console.log('[POPUP] Processing TIMER_STATE_UPDATE:', message.state);
+            
+            if (message.state) {
+                // Update local state
+                const previousMode = currentMode;
+                const wasRunning = isRunning;
+                
+                currentMode = message.state.mode || 'work';
+                isRunning = message.state.isRunning || false;
+                timeLeft = message.state.timeLeft || timeLeft;
+                sessionsCompleted = message.state.sessionsCompleted || sessionsCompleted;
+                
+                console.log(`[POPUP] State updated - Mode: ${currentMode}, Running: ${isRunning}, Time Left: ${timeLeft}s`);
+                
+                // Update UI
+                updateDisplay();
+                
+                // If mode changed to work and timer should be running, start it
+                if (currentMode === 'work' && isRunning && !wasRunning) {
+                    console.log('[POPUP] Starting work timer from state update');
+                    startTimer();
+                }
+                
+                // If mode changed, update the UI
+                if (previousMode !== currentMode) {
+                    updateModeDisplay();
+                }
+            }
+            
+            if (sendResponse) {
+                sendResponse({ success: true });
+            }
+            return true;
+        }
+        
+        // Handle break ended message
+        if (message.type === 'BREAK_ENDED') {
+            console.log('[POPUP] Processing BREAK_ENDED, calling handleBreakEnd with manualResume:', message.manualResume);
+            
+            // Ensure the popup is in the correct state
+            if (currentMode !== 'work') {
+                console.log('[POPUP] Switching to work mode before handling break end');
+                switchToWorkMode();
+            }
+            
+            // Handle the break end
+            handleBreakEnd(message.manualResume);
+            
+            // Save the updated state
+            saveTimerState();
+            
+            // Always respond to the message
+            if (sendResponse) {
+                sendResponse({ success: true });
+            }
+            
+            // Return true to indicate we'll respond asynchronously
+            return true;
+        }
+        
+        // For other message types, we don't need to respond asynchronously
+        return false;
+    });
 }
 
 /**
@@ -247,8 +346,18 @@ function toggleTimer() {
  * Sets up the timer end time, updates the UI, and creates background alarms.
  */
 function startTimer() {
+    console.log('[START_TIMER] Called, current state:', { 
+        currentMode, 
+        isRunning, 
+        timeLeft,
+        sessionsCompleted
+    });
+    
     // Don't start if there's no time left
-    if (timeLeft <= 0) return;
+    if (timeLeft <= 0) {
+        console.log('[START_TIMER] Not starting - no time left');
+        return;
+    }
     
     // Update UI to show timer is running
     isRunning = true;
@@ -262,14 +371,12 @@ function startTimer() {
     lastSyncTime = now;
     
     // Save the current state to persistent storage
+    console.log('[POPUP] Saving timer state before starting:', { currentMode, isRunning, timeLeft, timerEndTime });
     saveTimerState();
-    
-    // Set up a Chrome alarm to handle timing in the background
-    // This ensures the timer continues even if the popup is closed
-    chrome.alarms.create('pomodoroTimer', {
-        periodInMinutes: 0.5,  // Minimum allowed by Chrome (30 seconds)
-        when: now + 30000      // First alarm in 30 seconds
-    });
+    console.log('[POPUP] Requesting background to start timer alarm');
+    // Request background.js to start the timer alarm instead of creating it here
+    // This avoids conflicts with background.js alarm management
+    chrome.runtime.sendMessage({ type: 'START_TIMER' }).catch(e => console.error('[POPUP] Failed to request START_TIMER to background:', e));
     
     // Start the UI update loop (runs every 100ms for smooth display)
     timer = setInterval(updateTimer, 100);
@@ -321,8 +428,9 @@ function pauseTimer() {
     startPauseBtn.textContent = 'Resume';
     startPauseBtn.classList.remove('paused');
     
-    // Clear any existing alarms since we're pausing
-    chrome.alarms.clear('pomodoroTimer');
+    // Request background.js to clear any existing alarms
+    console.log('[POPUP] Requesting background to clear timer alarm');
+    chrome.runtime.sendMessage({ type: 'PAUSE_TIMER' }).catch(e => console.error('[POPUP] Failed to request PAUSE_TIMER to background:', e));
     
     // Save the current state so we can resume later
     saveTimerState();
@@ -346,17 +454,13 @@ function resetTimer() {
     updateDisplay();
     startPauseBtn.textContent = 'Start';
     
-    // Clear any existing Chrome alarms
-    chrome.alarms.clear('pomodoroTimer');
+    // Save the reset state instead of removing it
+    console.log('[POPUP] Saving reset timer state:', { currentMode, isRunning, timeLeft });
+    saveTimerState();
     
-    // Remove saved timer state from storage
-    chrome.storage.local.remove(['timerState']);
-    
-    // Clear the browser action badge
-    chrome.action.setBadgeText({ text: '' });
-    
-    // Reset the progress bar
-    updateProgressBar();
+    // Request background.js to update badge (which will clear it since isRunning is false)
+    console.log('[POPUP] Requesting background to update badge after reset');
+    chrome.runtime.sendMessage({ type: 'UPDATE_BADGE' }).catch(e => console.error('[POPUP] Failed to request UPDATE_BADGE to background:', e));
 }
 
 /**
@@ -480,14 +584,62 @@ async function startBreak() {
  * @param {boolean} manualResume - Whether the break was ended manually by the user
  */
 function handleBreakEnd(manualResume = false) {
-    console.log(`Break ended${manualResume ? ' manually' : ' automatically'}`);
-    switchToWorkMode();
+    console.log(`[HANDLE_BREAK_END] Called with manualResume: ${manualResume}`);
     
-    // If this was a manual resume, start the work timer
-    if (manualResume) {
-        console.log('Starting work timer after manual resume');
-        startTimer();
-    }
+    return new Promise(async (resolve, reject) => {
+        try {
+            console.log('[HANDLE_BREAK_END] Current state before switch:', { 
+                currentMode, 
+                isRunning, 
+                timeLeft, 
+                sessionsCompleted 
+            });
+            
+            // Switch to work mode first
+            console.log('[HANDLE_BREAK_END] Switching to work mode');
+            await switchToWorkMode();
+            
+            console.log('[HANDLE_BREAK_END] State after switchToWorkMode:', { 
+                currentMode, 
+                isRunning, 
+                timeLeft, 
+                sessionsCompleted 
+            });
+            
+            // If this was a manual resume, start the work timer
+            if (manualResume) {
+                console.log('[HANDLE_BREAK_END] Manual resume detected, starting work timer');
+                
+                // Ensure we're in work mode
+                if (currentMode !== 'work') {
+                    console.log('[HANDLE_BREAK_END] Forcing work mode before starting timer');
+                    currentMode = 'work';
+                }
+                
+                // Reset the timer to full work duration
+                const settings = await chrome.storage.local.get('settings');
+                timeLeft = settings.settings?.workDuration || (25 * 60);
+                
+                // Start the timer
+                startTimer();
+                
+                console.log('[HANDLE_BREAK_END] Work timer started successfully');
+            } else {
+                console.log('[HANDLE_BREAK_END] Automatic break end, not starting timer');
+            }
+            
+            // Save the updated state
+            await saveTimerState();
+            
+            // Update the display
+            updateDisplay();
+            
+            resolve(true);
+        } catch (error) {
+            console.error('[HANDLE_BREAK_END] Error:', error);
+            reject(error);
+        }
+    });
 }
 
 /**
@@ -495,7 +647,11 @@ function handleBreakEnd(manualResume = false) {
  * Updates the UI and resets the timer state.
  */
 function switchToWorkMode() {
-    console.log('Switching to work mode');
+    console.log('[SWITCH_TO_WORK_MODE] Called, current state:', { 
+        currentMode, 
+        isRunning, 
+        timeLeft 
+    });
     
     // Update timer state for work mode
     currentMode = 'work';
