@@ -87,10 +87,25 @@ You can adjust the timer settings by clicking the gear icon (⚙️) in the popu
 - ✅ Other Chromium-based browsers
 
 ---
+
+## 📸 Screenshots
+
+🚧 Coming Soon - Visual preview of the extension in action
+
+## 🎥 Video Tutorial
+
+🚧 Coming Soon - Step-by-step video guide on how to use the extension
+
+## 📥 Download
+
+🚧 Coming Soon - Direct download link for the extension
+
+---
+
 ## 🌐 View My Profiles
 
 Check out more of my work and connect with me online:  
-👉 [https://linktr.ee/your-link](https://linktr.ee/theankushrai))
+👉 [https://linktr.ee/your-link](https://linktr.ee/theankushrai)
 
 Includes:
 - GitHub  
