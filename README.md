@@ -22,11 +22,14 @@ This Chromium extension helps you stay productive using the Pomodoro Technique â
 
 ## ðŸš€ Quick Start
 
-1. Install from Chromium Web Store (Coming Soon) or load manually:
+1. Install from Microsoft Edge Web Store:
+   [Install from Edge Web Store](https://microsoftedge.microsoft.com/addons/detail/serene-focus/cjddininpjdachdddlcoaklagkmigpkc)
+   
+   Or clone and load manually:
    ```bash
    git clone [your-repo-url]
    ```
-2. Open `Chromium://extensions/`
+2. Open `edge://extensions/`
 3. Enable "Developer mode" (top-right)
 4. Click "Load unpacked" and select the extension folder
 
